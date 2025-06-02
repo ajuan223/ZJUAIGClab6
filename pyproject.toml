@@ -1,0 +1,10 @@
+[project]
+name = "lab6-new"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.10.3",
+    "numpy>=2.2.6",
+    "requests>=2.32.3",
+]
