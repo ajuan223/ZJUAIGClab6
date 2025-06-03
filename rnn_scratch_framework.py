@@ -7,7 +7,7 @@ parts (marked TODO) to build forward and backward passes, train the model, and
 sample text.
 
 Run with:
-    python rnn_scratch_framewor.py
+    python rnn_scratch_framework.py
 """
 
 import argparse
@@ -173,7 +173,17 @@ class RNN:
     #   logits:  (B, V) scores for final time‑step
     #   caches:  list of step caches for backprop
     # ---------------------------------------------------------------------
-
+    def forward(self, X_batch, h0):
+        # X_batch: (B, T)  h0: (B, H)
+        B, T = X_batch.shape
+        caches = []
+        h = h0
+        for t in range(T):
+            x_t = one_hot(X_batch[:, t], self.cell.Wxh.shape[0])  # (B, V)
+            h, cache = self.cell.forward(x_t, h)
+            caches.append(cache)
+        logits = h @ self.Why + self.by  # (B, V)
+        return logits, h, caches
     # ---------------------------------------------------------------------
     # TODO 2: backward through time.
     # Inputs:
@@ -182,7 +192,20 @@ class RNN:
     #   h_T:     final hidden state
     # Returns dh0 (gradient wrt initial hidden)
     # ---------------------------------------------------------------------
-
+    def backward(self, dlogits, caches, h_T):
+        # dlogits: (B, V)
+        # caches: list of step caches
+        # h_T: (B, H)
+        T = len(caches)
+        dh = dlogits @ self.Why.T  # (B, H)
+        self.dWhy += caches[-1][2].T @ dlogits  # caches[-1][2] 是最后时刻 h_T
+        self.dby += dlogits.sum(axis=0)
+        with open("delta.txt", "w") as f:
+            for t in reversed(range(T)):
+                cache = caches[t]
+                f.write(f"step {t}, ||dh||_2 = {np.linalg.norm(dh):.6f}\n")
+                dh = self.cell.backward(dh, cache)
+        return dh  # 返回初始隐藏状态的梯度
 
     def step_grad(self, lr):
         self.cell.step_grad(lr)
@@ -279,7 +302,35 @@ def sample(model, seed, c2i, i2c, vocab, length=200, temp=1.0, hidden_size=128):
 # -----------------------------------------------------------------------------
 # 8. Main
 # -----------------------------------------------------------------------------
+def grad_check(model, X, y, eps=1e-5, tol=1e-4):
+    xb = X[:2]
+    yb = y[:2]
+    h0 = np.zeros((2, model.cell.Whh.shape[0]), dtype=np.float32)
 
+    logits, h_T, caches = model.forward(xb, h0)
+    loss, dlogits = softmax_cross_entropy(logits, yb)
+    model.zero_grad()
+    model.backward(dlogits, caches, h_T)
+    analytic_grad = model.cell.dWxh.copy()
+
+    param = model.cell.Wxh
+    num_grad = np.zeros_like(param)
+    it = np.nditer(param, flags=['multi_index'], op_flags=['readwrite'])
+    while not it.finished:
+        idx = it.multi_index
+        old = param[idx]
+        param[idx] = old + eps
+        logits_p, _, _ = model.forward(xb, h0)
+        loss_p, _ = softmax_cross_entropy(logits_p, yb)
+        param[idx] = old - eps
+        logits_m, _, _ = model.forward(xb, h0)
+        loss_m, _ = softmax_cross_entropy(logits_m, yb)
+        param[idx] = old
+        num_grad[idx] = (loss_p - loss_m) / (2 * eps)
+        it.iternext()
+    rel_err = np.abs(num_grad - analytic_grad) / (np.maximum(1e-8, np.abs(num_grad) + np.abs(analytic_grad)))
+    print("max relative error:", rel_err.max())
+    assert rel_err.max() < tol, "Gradient check failed!"
 
 def main():
     global args
@@ -291,6 +342,7 @@ def main():
     X, y, vocab, c2i, i2c = build_dataset(text, args.seq_len)
 
     model = RNN(vocab, args.hidden)
+    grad_check(model, X, y)
     losses = train(
         model, X, y, vocab, args.epochs, args.lr, args.batch, args.hidden
     )
